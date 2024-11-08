@@ -1,0 +1,478 @@
+---
+title: "Salaries_Codes"
+author: "Isa Allahverdiyev and Umur Kizildas"
+date: "2023-09-15"
+output: html_document
+---
+#Loading Packages
+```{r}
+library(tm)
+library(textclean)
+library(textstem)
+library(tidytext)
+library(caret)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(caret)
+library(rpart)
+library(randomForest)
+library(data.table)
+library(cowplot)
+library(reshape2)
+```
+Above we loaded all required packages during our course project
+#               #               #               #               #               #               #               #
+#Loading Data
+```{r}
+#Data Collection
+salaries <- read.csv("salaries.csv")
+```
+We obtained data from https://www.kaggle.com/datasets/ruchi798/data-science-job-salaries . This data was originallya aggregated by ai-jobs.net. Given column names are quite clear for explaining variable.
+#               #               #               #               #               #               #               #
+#Data Cleaning
+```{r}
+salaries <- subset(salaries, select = -Salary.Currency)
+salaries <- subset(salaries, select = -Salary)
+# Assuming your data frame is called 'df' and the numeric column is 'Year'
+year_counts <- salaries %>%
+  group_by(Year) %>%
+  summarise(Count = n())
+print(year_counts)
+salaries <- salaries[salaries$Year == 2023, ]
+sum(is.na(salaries)) # To see if there are missing values
+str(salaries) #To  see classes for variables
+#In first step of data cleaning 
+```
+Here we subset Salary.Currency and Salary, becuse there were different currencies however Salaary.in.USD column is considers unified information. Our data was a timeseries data covering data points from 2020 to 2023. As for convenience of our model, and considering requirements, we chose single year so made it as cross-sectional data. After grouping datapoints with relevant dplyr package functions, most data points were in 2023 so we keep data points from 2023.
+#               #               #               #               #               #               #               #
+#Convert relevant variables to categorical variable
+```{r}
+unique_categories <- unique(salaries$Job.Title)
+experience <- unique(salaries$Experience.Level)
+expertise <- unique(salaries$Expertise.Level)
+location <- unique(salaries$Company.Location)
+residence <- unique(salaries$Employee.Residence)
+size <- unique(salaries$Company.Size)
+```
+Converting variables were necessary step, as initially they were created as character or numeric data however their context was not matching their variable type. As first step we take uniques of each variables to have a cleaan data for converting
+#               #               #               #               #               #               #               #
+#Converting factors
+```{r}
+salaries$Job.Title <- factor(salaries$Job.Title, levels = unique_categories)
+salaries$Employment_Type_Dummy <- ifelse(salaries$Employment.Type == "Full-Time", 1, 0)
+salaries$Experience.Level <- factor(salaries$Experience.Level, levels = experience)
+salaries$Expertise.Level <- factor(salaries$Expertise.Level, levels = expertise)
+salaries$Company.Size <- factor(salaries$Company.Size, levels = size)
+#is.na(salaries)
+```
+Above mentioned converting waasa simple as exact values were able to be considered for levels
+#               #               #               #               #               #               #               #
+#Further Convertations
+```{r}
+
+# Define the list of OECD countries (as of 2022)
+oecd_countries <- c("Australia", "Austria", "Belgium", "Canada", "Chile", 
+                    "Colombia", "Czechia", "Denmark", "Estonia", "Finland", 
+                    "France", "Germany", "Greece", "Hungary", "Iceland", 
+                    "Ireland", "Israel", "Italy", "Japan", "Korea, Republic of", 
+                    "Latvia", "Lithuania", "Luxembourg", "Mexico", "Netherlands", 
+                    "New Zealand", "Norway", "Poland", "Portugal", "Slovak Republic", 
+                    "Slovenia", "Spain", "Sweden", "Switzerland", "Turkey", 
+                    "United Kingdom", "United States")
+
+# Categorize the Company.Location variable
+salaries$Location_Dummy<- ifelse(salaries$Company.Location %in% oecd_countries, "1", "0")
+salaries$Residency_Dummy <- ifelse(salaries$Employee.Residence %in% oecd_countries, "1", "0")
+salaries$Location_Dummy <- as.factor(salaries$Location_Dummy)
+salaries$Residency_Dummy <- as.factor(salaries$Residency_Dummy)
+# You can then view or analyze the categorized data
+head(salaries)
+str(salaries) #To  see classes for variables
+```
+Additional to above mentioned categorization, we categorized Company Location, and Employee Residence based on them being OECD countries. This step is necessary because without it in later steps having too many categories will cause a problem in PCA. Categorization based on whether being OECD is economically logical, as these countries share similarities. 
+#               #               #               #               #               #               #               #
+#Further Convertations
+```{r}
+# Add columns based on the presence of specific words in the job title
+salaries$Has_Big <- ifelse(grepl("big", tolower(salaries$Job.Title)), 1, 0)
+salaries$Has_Manager <- ifelse(grepl("Manager", tolower(salaries$Job.Title)), 1, 0)
+salaries$Has_Data <- ifelse(grepl("data", tolower(salaries$Job.Title)), 1, 0)
+# Define a function to categorize job titles
+categorize_title <- function(title) {
+  if (grepl("data engineer|big data|etl", tolower(title))) {
+    return("Data Engineer")
+  } else if (grepl("data scientist|lead data|principal data|applied data", tolower(title))) {
+    return("Data Scientist")
+  } else if (grepl("machine learning|ml|deep learning|nlp|computer vision", tolower(title))) {
+    return("Machine Learning")
+  } else if (grepl("data analyst|bi analyst|bi data|business data|data quality|data operations", tolower(title))) {
+    return("Analyst")
+  } else if (grepl("manager|director|head of data|lead", tolower(title))) {
+    return("Manager/Director")
+  } else if (grepl("research", tolower(title))) {
+    return("Research")
+  } else if (grepl("business intelligence|bi developer", tolower(title))) {
+    return("Business Intelligence")
+  } else if (grepl("^ai$|ai | ai|artificial intelligence", tolower(title))) {
+    return("AI")
+  } else if (grepl("architect", tolower(title))) {
+    return("Architect")
+  } else if (grepl("consultant", tolower(title))) {
+    return("Consultant")
+  } else if (grepl("specialist", tolower(title))) {
+    return("Specialist")
+  } else {
+    return("Other")
+  }
+}
+
+# Apply the categorization function to the job titles
+salaries$Job.Category <- sapply(salaries$Job.Title, categorize_title)
+# Cross-tabulate 'Job.Category' and 'Experience.Level'
+table(salaries$Expertise.Level, salaries$Experience.Level)
+table(salaries$Job.Category, salaries$Experience.Level)
+table(salaries$Job.Category, salaries$Has_Manager)
+table(salaries$Job.Category, salaries$Has_Data)
+table(salaries$Job.Category, salaries$Has_Big)
+table(salaries$Expertise.Level, salaries$Job.Category)
+table(salaries$Experience.Level, salaries$Job.Category)
+```
+Now here we will categorize Job Titles. First we added three coolumns based on if there is word Big, Data or Manager in title, we will later check if it is an affect based on our research. After cross-tabulation we see that experience nd expertise level consider multicollinearity risk so we will drop one of them. Last two rows of above-mentioned section is to check if there is case of potential information loss in case for drop, which is not, as results exactly match.
+#               #               #               #               #               #               #               #
+#Descriptive Statistics
+```{r}
+summary(salaries)
+```
+From summary of our data, we see that most of our employees have full-time employment, and their experience level is mostly senior. There is huge salary variance. Most of our employees and employers are in OECD countries, however these variables are not mirroring each other. 
+#               #               #               #               #               #               #               #
+#Visualization
+```{r}
+# Histogram for Salary in USD
+ggplot(salaries, aes(x = `Salary.in.USD`)) + 
+  geom_histogram(binwidth = 5000, fill = "skyblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Salary in USD", x = "Salary in USD", y = "Frequency") +
+  theme_minimal() +
+  scale_x_continuous(labels = scales::comma) # Human-readable format
+```
+From Histogram of Distribution of Salary in USD, we can see that our data is slightly right-skewed, which means most of our data points are in left side from mean, or less we could see this information in summary section as well, by comparing numbers. We believe that data contains a lot of valuable information, as for young researchers its interesting to analyze reasons for these deviations.
+#               #               #               #               #               #               #               #
+#Bar plots
+```{r}
+# Bar plot for Job Title
+# Bar plot for Job Category
+ggplot(salaries, aes(x = `Job.Category`)) + 
+  geom_bar(fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Job Categories", x = "Job Category", y = "Count") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Aggregate data by Job Category to calculate average salaries
+avg_salaries <- salaries %>%
+  group_by(`Job.Category`) %>%
+  summarize(Avg_Salary = mean(`Salary.in.USD`))
+
+# Bar plot for average salaries by Job Category
+ggplot(avg_salaries, aes(x = `Job.Category`, y = Avg_Salary)) + 
+  geom_bar(stat = "identity", fill = "steelblue", color = "black", alpha = 0.7) +
+  labs(title = "Average Salary by Job Category", x = "Job Category", y = "Average Salary in USD") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::comma) # Human-readable format for y-axis
+# Bar plot for Experience Level
+ggplot(salaries, aes(x = `Experience.Level`)) + 
+  geom_bar(fill = "lightgreen", color = "black", alpha = 0.7) +
+  labs(title = "Distribution of Experience Levels", x = "Experience Level", y = "Count") +
+  theme_minimal()
+```
+Above we displayed 3 histograms, 1st is distribution of job categories based on their frequency. We se that job categories also vary, instead of concentrating in one category. There are still differences between minimum and maximum frequencies but we believe our categorization is sufficient, as to much generalizing might effect results negatively and cause for potential information loss. Another supportive argument is that, average salaries are close to each other, so our data is homogenous and we successfully combines similar jobs together. However, there is still difference between average numbers, so it shows that from information loss aspect we were also sucessful, and achieved to keep differences. Last histogram shows experience level, and is in line with our previous statement about experience.
+#               #               #               #               #               #               #               #
+#Storing results of data cleaning in new dataset
+```{r}
+new_salaries <- salaries %>% 
+                select(Salary.in.USD, Employment_Type_Dummy, Experience.Level, 
+                       Company.Size, Location_Dummy, Residency_Dummy, Has_Big, 
+                       Has_Data, Job.Category)
+colnames(new_salaries) <- gsub("\\.", "_", colnames(new_salaries))
+```
+#Now we create new dataset where we keep cleaned data. We dropped Has_Manager because it was irrelavent as there was no job title with word Manager, we also dropped Expertise level, as above-mentioned results proved that they are mirroring Experience.Level variable. Meanwhile we made new data set with newly created categories. Here we also convert "." to "_" as in advance modeling it cause errors
+#               #               #               #               #               #               #               #
+#Data splitting 
+```{r}
+set.seed(123)  # Setting seed ensures reproducibility
+
+# Splitting data into training and testing sets
+index <- createDataPartition(new_salaries$`Salary_in_USD`, p = 0.7, list = FALSE)
+train_data <- new_salaries[index, ]
+test_data  <- new_salaries[-index, ]
+```
+Data Splitting this will be vital for further modeling steps. By choosing 0.7 for p, we allocate 70% of our data for training, and 30% for testing. We choose this approach to have sufficient amount of data for testing, meanwhile making ability of training optimal. Ofcourse this selection, could be matter for discussion.
+#               #               #               #               #               #               #               #
+#Model Building (Simple Models)
+```{r}
+# Linear Regression
+lm_model <- lm(`Salary_in_USD` ~ ., data = train_data)
+lm_predictions <- predict(lm_model, newdata = test_data)
+lm_predictions_train <- predict(lm_model, newdata = train_data)
+summary(lm_model)
+
+# Decision Trees
+tree_model <- rpart(`Salary_in_USD` ~ ., data = train_data, method = "anova")
+tree_predictions <- predict(tree_model, test_data)
+tree_predictions_train <- predict(tree_model, train_data)
+```
+
+#Plotting LM model results 
+```{r}
+# Load the ggplot2 package if it's not already loaded
+if (!requireNamespace("ggplot2", quietly = TRUE)) {
+  install.packages("ggplot2")
+}
+
+library(ggplot2)
+
+# Create a data frame for plotting
+plot_data <- data.frame(Actual = test_data$Salary_in_USD,
+                         Predicted = lm_predictions)
+
+# Create scatterplot and add regression lines
+scatterplot <- ggplot(plot_data, aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  labs(title = "Linear Regression on Test Data",
+       x = "Actual Salary (USD)",
+       y = "Predicted Salary (USD)")
+
+# Print the scatterplot
+print(scatterplot)
+
+# Repeat the process for the training data
+plot_data_train <- data.frame(Actual = train_data$Salary_in_USD,
+                               Predicted = lm_predictions_train)
+
+scatterplot_train <- ggplot(plot_data_train, aes(x = Actual, y = Predicted)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x, se = FALSE) +
+  labs(title = "Linear Regression on Training Data",
+       x = "Actual Salary (USD)",
+       y = "Predicted Salary (USD)")
+
+# Print the scatterplot for training data
+print(scatterplot_train)
+```
+#Model Evaluation of Linear regression and decision trees
+```{r}
+# For Linear Regression:
+lm_mae <- mean(abs(test_data$`Salary_in_USD` - lm_predictions))
+lm_rmse <- sqrt(mean((test_data$`Salary_in_USD` - lm_predictions)^2))
+lm_mae_train <- mean(abs(train_data$`Salary_in_USD` - lm_predictions_train))
+lm_rmse_train <- sqrt(mean((train_data$`Salary_in_USD` - lm_predictions_train)^2))
+
+# For Decision Trees:
+tree_mae <- mean(abs(test_data$`Salary_in_USD` - tree_predictions))
+tree_rmse <- sqrt(mean((test_data$`Salary_in_USD` - tree_predictions)^2))
+tree_mae_train <- mean(abs(train_data$`Salary_in_USD` - tree_predictions_train))
+tree_rmse_train <- sqrt(mean((train_data$`Salary_in_USD` - tree_predictions_train)^2))
+```
+#Visualise model results
+```{r}
+# Prepare data for visualization
+comparison_data <- data.frame(
+  Model = c("Linear Regression", "Decision Tree", "Linear Regression", "Decision Tree"),
+  Metric_Value = c(lm_mae, tree_mae, lm_rmse, tree_rmse),
+  Metric_Type = rep(c("MAE", "RMSE"), each = 2)
+)
+
+# Bar plot using ggplot2
+ggplot(comparison_data, aes(x = Model, y = Metric_Value, fill = Metric_Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Model Performance Comparison", 
+       y = "Metric Value", 
+       x = "Model Type", 
+       fill = "Metric Type") +
+  theme_minimal()
+```
+#Advance Modeling (Random forest and Neural Network)
+```{r}
+#Randon Forest
+rf_model <- randomForest(`Salary_in_USD` ~ ., data = train_data)
+rf_predictions <- predict(rf_model, test_data)
+rf_predictions_training <- predict(rf_model, train_data)
+# For Random Forest:
+#MSE For testıng
+forest_mae <- mean(abs(test_data$`Salary_in_USD` - rf_predictions))
+forest_rmse <- sqrt(mean((test_data$`Salary_in_USD` - rf_predictions)^2))
+#MSE For traınıng
+forest_mae_training  <- mean(abs(train_data$`Salary_in_USD` - rf_predictions_training))
+forest_rmse_training <- sqrt(mean((train_data$`Salary_in_USD` - rf_predictions_training)^2))
+
+#Neural Network
+library(nnet)
+nn_model <- nnet(`Salary_in_USD` ~ ., data = train_data,learningrate=0.005, linout = TRUE,size = 10)
+nn_predictions <- predict(nn_model, test_data)
+nn_predictionstrain <- predict(nn_model, train_data)
+neural_mae <- mean(abs(test_data$`Salary_in_USD` - nn_predictions))
+neural_rmse <- sqrt(mean((test_data$`Salary_in_USD` - nn_predictions)^2))
+
+neural_maetr <- mean(abs(train_data$`Salary_in_USD` - nn_predictionstrain))
+neural_rmsetr <- sqrt(mean((train_data$`Salary_in_USD` - nn_predictionstrain)^2))
+```
+# Multi-layer neural network with repeated cross-validation
+```{r}
+# Fit the neural network using the significant predictors
+set.seed(123)
+nn_fit <- train(
+  Salary_in_USD ~ .,
+  data = new_salaries,
+  method = "nnet",
+  linout = TRUE,
+  trace = FALSE,
+  tuneGrid = expand.grid(.size = c(6, 8, 10), .decay = c(0.1, 0.5, 1)),
+  trControl = trainControl(
+    method = "cv",
+    number = 5,
+    repeats = 3,
+    verboseIter = TRUE
+  )
+)
+nn_fit$results
+```
+#Principal Component Analysis (PCA)
+```{r}
+train_data_dummies <- model.matrix(Salary_in_USD ~ . - 1, data = train_data) # '- 1' removes intercept
+test_data_dummies <- model.matrix(Salary_in_USD ~ . - 1, data = test_data)
+scaled_train_data <- scale(train_data_dummies)
+scaled_test_data <- scale(test_data_dummies)
+pca_train <- prcomp(scaled_train_data, center = TRUE, scale. = TRUE)
+pca_test <- prcomp(scaled_test_data, center = TRUE, scale. = TRUE)
+#PCA to Linear Regression 
+lm_model_pca <- lm(Salary_in_USD ~ ., data = data.frame(Salary_in_USD = train_data$Salary_in_USD, pca_train$x))
+lm_predictions_pca <- predict(lm_model_pca, newdata = data.frame(pca_test$x))
+#PCA to Random Forest
+rf_model_pca <- randomForest(Salary_in_USD ~ ., data = data.frame(Salary_in_USD = train_data$Salary_in_USD, pca_train$x))
+rf_predictions_pca <- predict(rf_model_pca, newdata = data.frame(pca_test$x))
+#PCA to Neural Network
+library(nnet)
+nn_model_pca <- nnet(Salary_in_USD ~ ., data = data.frame(Salary_in_USD = train_data$Salary_in_USD, pca_train$x), size = 10, linout = TRUE)
+nn_predictions_pca <- predict(nn_model_pca, newdata = data.frame(pca_test$x))
+```
+#Evaluation
+```{r}
+# MAE and RMSE for Linear Regression model with PCA
+lm_mae_pca <- mean(abs(test_data$Salary_in_USD - lm_predictions_pca))
+lm_rmse_pca <- sqrt(mean((test_data$Salary_in_USD - lm_predictions_pca)^2))
+
+cat("Linear Regression with PCA - MAE:", lm_mae_pca, "\n")
+cat("Linear Regression with PCA - RMSE:", lm_rmse_pca, "\n")
+
+# MAE and RMSE for Random Forest model with PCA
+rf_mae_pca <- mean(abs(test_data$Salary_in_USD - rf_predictions_pca))
+rf_rmse_pca <- sqrt(mean((test_data$Salary_in_USD - rf_predictions_pca)^2))
+
+cat("Random Forest with PCA - MAE:", rf_mae_pca, "\n")
+cat("Random Forest with PCA - RMSE:", rf_rmse_pca, "\n")
+
+# MAE and RMSE for Neural Network model with PCA
+nn_mae_pca <- mean(abs(test_data$Salary_in_USD - nn_predictions_pca))
+nn_rmse_pca <- sqrt(mean((test_data$Salary_in_USD - nn_predictions_pca)^2))
+
+cat("Neural Network with PCA - MAE:", nn_mae_pca, "\n")
+cat("Neural Network with PCA - RMSE:", nn_rmse_pca, "\n")
+```
+#Compare RMSE for Linear Regression, Decision Trees, Random Forest, Neural Network based on both train and test data
+```{r}
+# Create a data frame with RMSE values
+metrics_df <- data.frame(
+  Model = c("Linear Regression", "Decision Trees", "Random Forest", "Neural Network"),
+  RMSE_Test = c(lm_rmse, tree_rmse, forest_rmse, neural_rmse),
+  RMSE_Train = c(lm_rmse_train, tree_rmse_train, forest_rmse_training, neural_rmsetr)
+)
+
+# Reshape the data frame
+metrics_df <- metrics_df %>%
+  pivot_longer(cols = starts_with("RMSE"), names_to = "Dataset", values_to = "RMSE_Value")
+
+# Create the bar plot with custom colors
+ggplot(metrics_df, aes(x = Model, y = RMSE_Value, fill = Dataset)) +
+  geom_bar(stat = "identity", position = "dodge", color = "black") +
+  scale_fill_manual(values = c("red", "blue")) +
+  labs(title = "Model Performans Karşılaştırması (RMSE)",
+       y = "RMSE",
+       x = "Model") +
+  theme_minimal()
+```
+#Model Validation ()
+```{r}
+# Initialize a list to store results
+results <- list()
+
+# Define a function to compute metrics
+compute_metrics <- function(actual, predicted) {
+  mae <- postResample(predicted, actual)[1]
+  rmse <- postResample(predicted, actual)[2]
+  r2 <- postResample(predicted, actual)[3]
+  list(MAE = mae, RMSE = rmse, Rsquared = r2)
+}
+
+# Assuming your other models without PCA are named lm_model, rf_model, etc.
+# 1. Linear Regression without PCA
+lm_pred <- predict(lm_model, test_data)
+results$lm <- compute_metrics(test_data$Salary_in_USD, lm_pred)
+
+# 2. Random Forest without PCA
+rf_pred <- predict(rf_model, test_data)
+results$rf <- compute_metrics(test_data$Salary_in_USD, rf_pred)
+
+# 3. Neural Network without PCA
+nn_pred <- predict(nn_model, test_data)
+results$nn <- compute_metrics(test_data$Salary_in_USD, nn_pred)
+
+# 4. Linear Regression with PCA
+results$lm_pca <- compute_metrics(test_data$Salary_in_USD, lm_predictions_pca)
+
+# 5. Random Forest with PCA
+results$rf_pca <- compute_metrics(test_data$Salary_in_USD, rf_predictions_pca)
+
+# 6. Neural Network with PCA
+results$nn_pca <- compute_metrics(test_data$Salary_in_USD, nn_predictions_pca)
+
+# Print results
+results
+```
+#Plotting Model Validation step results
+```{r}
+# Load necessary libraries
+
+# Create a data frame from the results list
+results_df <- do.call(rbind, lapply(results, data.frame))
+results_df$model <- rownames(results_df)  # Add a 'model' column for model names
+
+# Reshape the data frame to have a single row per metric
+
+results_melted <- melt(results_df, id.vars = "model")
+
+# Create separate plots for each metric
+mae_plot <- ggplot(results_melted[results_melted$variable == "MAE", ], aes(x = model, y = value, fill = model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of MAE", x = "Model", y = "MAE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+rmse_plot <- ggplot(results_melted[results_melted$variable == "RMSE", ], aes(x = model, y = value, fill = model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of RMSE", x = "Model", y = "RMSE") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+rsquared_plot <- ggplot(results_melted[results_melted$variable == "Rsquared", ], aes(x = model, y = value, fill = model)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Comparison of Rsquared", x = "Model", y = "Rsquared") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Arrange the plots using the cowplot package
+
+plot_grid(mae_plot, rmse_plot, rsquared_plot, ncol = 3)
+
+
+
+```
